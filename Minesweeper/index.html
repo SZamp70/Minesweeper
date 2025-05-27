@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Campo Minato</title>
+  <!-- Font 8-bit style -->
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --cell-size: 40px;
+      --cols: 10;
+      --rows: 10;
+      --neon-color: #39ff14;
+      --tile-light: #666666; /* Colore più scuro per celle non scoperte */
+      --tile-dark: #444444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Press Start 2P', cursive;
+      background: #111;
+      background-image:
+        radial-gradient(circle at 20px 20px, rgba(57,255,20,0.2) 2px, transparent 0),
+        radial-gradient(circle at 80px 80px, rgba(57,255,20,0.2) 2px, transparent 0);
+      background-size: 100px 100px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      color: var(--neon-color);
+    }
+    #controls {
+      margin: 20px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    #controls label {
+      display: flex;
+      flex-direction: column;
+      font-size: 0.7rem;
+      text-align: center;
+    }
+    #controls input, #controls button {
+      padding: 8px;
+      font-size: 0.8rem;
+      border: 2px solid var(--neon-color);
+      background: transparent;
+      color: var(--neon-color);
+      border-radius: 4px;
+    }
+    #controls input:focus, #controls button:focus {
+      outline: none;
+      box-shadow: 0 0 8px var(--neon-color);
+    }
+    #controls button {
+      cursor: pointer;
+    }
+    #game {
+      display: grid;
+      grid-template-columns: repeat(var(--cols), var(--cell-size));
+      grid-template-rows: repeat(var(--rows), var(--cell-size));
+      gap: 4px;
+      touch-action: manipulation;
+    }
+    .cell {
+      width: var(--cell-size);
+      height: var(--cell-size);
+      background: var(--tile-light);
+      border: 2px solid var(--tile-dark);
+      box-shadow:
+        inset 2px 2px 5px rgba(0,0,0,0.4),
+        inset -2px -2px 5px rgba(255,255,255,0.1),
+        2px 2px 5px rgba(0,0,0,0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      color: #ddd;
+      user-select: none;
+      position: relative;
+      transition: background 0.2s, box-shadow 0.2s;
+    }
+    .cell.revealed {
+      background: #f0f0f0;
+      border-color: #ccc;
+      box-shadow: inset 1px 1px 2px rgba(0,0,0,0.1);
+      color: #333;
+    }
+    .cell.flagged::after {
+      content: '🚩';
+      font-size: 1rem;
+      position: absolute;
+    }
+    .cell.mine.revealed {
+      background: #ff4e4e;
+      background-image: radial-gradient(circle at center, #ff0000 20%, #800000 80%);
+      box-shadow: inset 1px 1px 2px rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <label>Righe:
+      <input type="number" id="inpRows" value="10" min="5" max="20">
+    </label>
+    <label>Colonne:
+      <input type="number" id="inpCols" value="10" min="5" max="20">
+    </label>
+    <label>Mine:
+      <input type="number" id="inpMines" value="15" min="1" max="100">
+    </label>
+    <button id="startBtn">Avvia</button>
+    <button id="modeToggle">Modalità: Scopri</button>
+  </div>
+  <div id="game"></div>
+
+  <script>
+    // Suoni retrò 80s con WebAudio
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioCtx();
+    function beep(freq = 440, time = 0.1) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      osc.start();
+      gain.gain.setValueAtTime(1, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + time);
+      osc.stop(audioCtx.currentTime + time);
+    }
+
+    let rows, cols, mines, mode = 'reveal';
+    const gameEl = document.getElementById('game');
+
+    document.getElementById('modeToggle').addEventListener('click', () => {
+      mode = mode === 'reveal' ? 'flag' : 'reveal';
+      document.getElementById('modeToggle').textContent = 'Modalità: ' + (mode === 'reveal' ? 'Scopri' : 'Segna');
+    });
+    document.getElementById('startBtn').addEventListener('click', init);
+
+    function init() {
+      rows = +document.getElementById('inpRows').value;
+      cols = +document.getElementById('inpCols').value;
+      mines = +document.getElementById('inpMines').value;
+      document.documentElement.style.setProperty('--rows', rows);
+      document.documentElement.style.setProperty('--cols', cols);
+      gameEl.innerHTML = '';
+      const grid = [];
+      for (let r = 0; r < rows; r++) {
+        grid[r] = [];
+        for (let c = 0; c < cols; c++) {
+          const cell = document.createElement('div');
+          cell.classList.add('cell');
+          cell.dataset.row = r;
+          cell.dataset.col = c;
+          cell.addEventListener('click', onCellClick);
+          cell.addEventListener('contextmenu', e => { e.preventDefault(); flagCell(cell); });
+          cell.addEventListener('touchstart', handleTouch);
+          grid[r][c] = { el: cell, mine: false, revealed: false, flagged: false, count: 0 };
+          gameEl.appendChild(cell);
+        }
+      }
+      let placed = 0;
+      while (placed < mines) {
+        const r = Math.floor(Math.random() * rows);
+        const c = Math.floor(Math.random() * cols);
+        if (!grid[r][c].mine) { grid[r][c].mine = true; placed++; }
+      }
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+        if (!grid[r][c].mine) {
+          let cnt = 0;
+          for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+            const nr = r + dr, nc = c + dc;
+            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc].mine) cnt++;
+          }
+          grid[r][c].count = cnt;
+        }
+      }
+      window.myGrid = grid;
+    }
+
+    function onCellClick() {
+      if (mode === 'flag') return flagCell(this);
+      revealCell(this);
+    }
+
+    function revealCell(cellEl) {
+      const r = +cellEl.dataset.row;
+      const c = +cellEl.dataset.col;
+      const cell = window.myGrid[r][c];
+      if (cell.revealed || cell.flagged) return;
+      cell.revealed = true;
+      cellEl.classList.add('revealed');
+      beep(440, 0.1);
+      if (cell.mine) {
+        cellEl.classList.add('mine');
+        alert('💥 Hai perso!');
+        revealAll();
+      } else {
+        if (cell.count > 0) {
+          cellEl.textContent = cell.count;
+        } else {
+          revealNeighbors(r, c);
+        }
+        checkWin();
+      }
+    }
+
+    function revealNeighbors(r, c) {
+      const stack = [[r, c]];
+      const visited = new Set();
+      while (stack.length) {
+        const [x, y] = stack.pop();
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < rows && ny >= 0 && ny < cols) {
+            const neighbor = window.myGrid[nx][ny];
+            const key = nx + ',' + ny;
+            if (!visited.has(key) && !neighbor.revealed && !neighbor.flagged) {
+              neighbor.revealed = true;
+              neighbor.el.classList.add('revealed');
+              if (neighbor.count > 0) {
+                neighbor.el.textContent = neighbor.count;
+              } else {
+                stack.push([nx, ny]);
+              }
+            }
+            visited.add(key);
+          }
+        }
+      }
+    }
+
+    function flagCell(cellEl) {
+      const r = +cellEl.dataset.row;
+      const c = +cellEl.dataset.col;
+      const cell = window.myGrid[r][c];
+      if (cell.revealed) return;
+      cell.flagged = !cell.flagged;
+      cellEl.classList.toggle('flagged');
+      beep(880, 0.1);
+    }
+
+    function revealAll() {
+      window.myGrid.flat().forEach(c => {
+        if (c.mine) c.el.classList.add('revealed', 'mine');
+      });
+    }
+
+    function checkWin() {
+      const cells = window.myGrid.flat();
+      if (cells.filter(c => !c.mine && c.revealed).length === rows * cols - mines) {
+        alert('🎉 Complimenti, hai vinto!');
+        revealAll();
+      }
+    }
+
+    let touchTimer;
+    function handleTouch(e) {
+      touchTimer = setTimeout(() => flagCell(e.currentTarget), 500);
+      e.currentTarget.addEventListener('touchend', () => clearTimeout(touchTimer), { once: true });
+    }
+
+    // inizializza al caricamento
+    init();
+  </script>
+</body>
+</html>
+
